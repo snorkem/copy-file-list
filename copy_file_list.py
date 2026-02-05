@@ -537,86 +537,66 @@ class FileFinder:
                 # For case-insensitive (default) search
                 if not self.case_sensitive:
                     self.logger.debug(f"Using case-insensitive search for pattern: {pattern}")
-                    
+
                     # Convert pattern to uppercase for comparison
                     upper_pattern = pattern.upper()
-                    
-                    # Extract base name if pattern has extension
-                    base_pattern = os.path.splitext(upper_pattern)[0] if '.' in pattern else upper_pattern
-                    self.logger.debug(f"Extracted base pattern: {base_pattern}")
-                    
+
+                    # Check if pattern has an extension
+                    pattern_has_extension = '.' in pattern
+                    base_pattern = os.path.splitext(upper_pattern)[0] if pattern_has_extension else upper_pattern
+                    self.logger.debug(f"Pattern has extension: {pattern_has_extension}, base pattern: {base_pattern}")
+
                     # Process ampersands and special characters for better matching
                     special_char_pattern = re.sub(r'[&\s()\[\]+.-]', '.', upper_pattern)
-                    
+                    special_char_base_pattern = re.sub(r'[&\s()\[\]+.-]', '.', base_pattern)
+
                     # First pass: Look for all matching files
                     for root, dirs, files in os.walk(src_dir):
                         # Track this directory
                         dirs_searched.add(root)
                         subdirectory_count += 1
-                        
+
                         # Debug directory traversal
                         if subdirectory_count % 20 == 0:
                             self.logger.debug(f"Traversed {subdirectory_count} directories, current: {root}")
-                        
+
                         for filename in files:
                             file_count += 1
                             full_path = os.path.join(root, filename)
-                            
+
                             # Debug file examination
                             if file_count % 1000 == 0:
                                 self.logger.debug(f"Examined {file_count} files")
-                            
+
                             # Case-insensitive comparison with filename
                             upper_filename = filename.upper()
-                            
-                            # 1. Check for exact match
-                            if upper_filename == upper_pattern:
-                                # Apply filters
-                                if exclude_patterns and self._should_exclude(full_path, exclude_patterns):
-                                    self.excluded_files += 1
-                                    continue
-                                if max_size_mb > 0:
-                                    try:
-                                        file_size_mb = self._get_file_size_mb(full_path)
-                                        if file_size_mb > max_size_mb:
-                                            self.size_exceeded_files += 1
-                                            continue
-                                    except (OSError, IOError):
-                                        continue
+                            file_base = os.path.splitext(upper_filename)[0] if '.' in filename else upper_filename
 
-                                matches.append(full_path)
-                                self.logger.debug(f"Found exact match: {full_path}")
-                                if first_match_only:
-                                    should_stop = True
-                                    break
-                                continue
+                            is_match = False
+                            match_type = ""
 
-                            # 2. Check for base name match
-                            if '.' in filename:
-                                file_base = os.path.splitext(upper_filename)[0]
+                            if pattern_has_extension:
+                                # Pattern has extension - require exact filename match (case-insensitive)
+                                if upper_filename == upper_pattern:
+                                    is_match = True
+                                    match_type = "exact match"
+                                # Special character handling for patterns with problematic characters
+                                elif '&' in pattern or ' ' in pattern or '(' in pattern or ')' in pattern:
+                                    if re.fullmatch(special_char_pattern, upper_filename):
+                                        is_match = True
+                                        match_type = "special character exact match"
+                            else:
+                                # Pattern has NO extension - match any file with matching base name
                                 if file_base == base_pattern:
-                                    # Apply filters
-                                    if exclude_patterns and self._should_exclude(full_path, exclude_patterns):
-                                        self.excluded_files += 1
-                                        continue
-                                    if max_size_mb > 0:
-                                        try:
-                                            file_size_mb = self._get_file_size_mb(full_path)
-                                            if file_size_mb > max_size_mb:
-                                                self.size_exceeded_files += 1
-                                                continue
-                                        except (OSError, IOError):
-                                            continue
+                                    is_match = True
+                                    match_type = "base name match"
+                                # Special character handling for base name matching
+                                elif '&' in pattern or ' ' in pattern or '(' in pattern or ')' in pattern:
+                                    if re.fullmatch(special_char_base_pattern, file_base):
+                                        is_match = True
+                                        match_type = "special character base name match"
 
-                                    matches.append(full_path)
-                                    self.logger.debug(f"Found base name match: {full_path}")
-                                    if first_match_only:
-                                        should_stop = True
-                                        break
-                                    continue
-
-                            # 3. Check for substring match (like using '*' in shell script)
-                            if upper_pattern in upper_filename or base_pattern in upper_filename:
+                            if is_match:
                                 # Apply filters
                                 if exclude_patterns and self._should_exclude(full_path, exclude_patterns):
                                     self.excluded_files += 1
@@ -631,39 +611,15 @@ class FileFinder:
                                         continue
 
                                 matches.append(full_path)
-                                self.logger.debug(f"Found substring match: {full_path}")
+                                self.logger.debug(f"Found {match_type}: {full_path}")
                                 if first_match_only:
                                     should_stop = True
                                     break
-                                continue
 
-                            # 4. Special handling for EDL file paths with problematic characters
-                            if '&' in pattern or ' ' in pattern or '(' in pattern or ')' in pattern:
-                                if re.search(special_char_pattern, upper_filename):
-                                    # Apply filters
-                                    if exclude_patterns and self._should_exclude(full_path, exclude_patterns):
-                                        self.excluded_files += 1
-                                        continue
-                                    if max_size_mb > 0:
-                                        try:
-                                            file_size_mb = self._get_file_size_mb(full_path)
-                                            if file_size_mb > max_size_mb:
-                                                self.size_exceeded_files += 1
-                                                continue
-                                        except (OSError, IOError):
-                                            continue
-
-                                    matches.append(full_path)
-                                    self.logger.debug(f"Found special character match: {full_path}")
-                                    if first_match_only:
-                                        should_stop = True
-                                        break
-                                    continue
-                        
                         # If we found a match and only want the first one, stop searching directories
                         if should_stop:
                             break
-                
+
                     self.logger.debug(f"Case-insensitive search completed. Examined {file_count} files in {subdirectory_count} directories.")
                                     
                 # For case-sensitive or regex searches
