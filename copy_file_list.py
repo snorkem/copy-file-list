@@ -242,7 +242,26 @@ class Logger:
 
 class EDLParser:
     """Handles parsing of EDL files to extract source filenames."""
-    
+
+    # EDL comment fields that carry source media names, tried in order. The
+    # first layer with any matches wins, so Avid EDLs (which also contain
+    # FROM CLIP NAME comments) keep using their SOURCE FILE lines.
+    SOURCE_FIELD_LAYERS = [
+        # Avid Media Composer: "*SOURCE FILE: A001_C002.MXF"
+        ('Avid Media Composer', 'SOURCE FILE',
+         re.compile(r'^[ \t]*\*[ \t]*SOURCE FILE:[ \t]*(.*?)[ \t\r]*$', re.MULTILINE)),
+        # Premiere Pro: "* FROM CLIP NAME:  A001_C002.mov", plus
+        # "* TO CLIP NAME:" for the incoming clip of a transition
+        ('Premiere Pro', 'FROM/TO CLIP NAME',
+         re.compile(r'^[ \t]*\*[ \t]*(?:FROM|TO) CLIP NAME:[ \t]*(.*?)[ \t\r]*$', re.MULTILINE)),
+    ]
+
+    # Synthetic clips Premiere Pro writes into EDLs that have no media file
+    GENERATOR_CLIP_NAMES = {
+        'black video', 'color matte', 'bars and tone', 'hd bars and tone',
+        'universal counting leader', 'transparent video', 'adjustment layer',
+    }
+
     def __init__(self, logger: Logger):
         self.logger = logger
     
@@ -250,6 +269,9 @@ class EDLParser:
         """
         Parse an EDL file to extract source filenames.
         Returns a list of unique source filenames.
+
+        Supports Avid Media Composer EDLs (SOURCE FILE comments) and
+        Premiere Pro EDLs (FROM CLIP NAME / TO CLIP NAME comments).
         
         Args:
             edl_file: Path to the EDL file
@@ -258,7 +280,7 @@ class EDLParser:
             List of unique source filenames found in the EDL
             
         Raises:
-            ValueError: If the EDL file does not contain any SOURCE FILE fields
+            ValueError: If the EDL file does not contain any recognized source fields
         """
         self.logger.log(f"Parsing EDL file: {edl_file}")
         
@@ -271,38 +293,35 @@ class EDLParser:
             with open(edl_file, 'r', encoding=encoding, errors='replace') as f:
                 edl_content = f.read()
             
-            # Check if the EDL contains any SOURCE FILE fields
-            if not re.search(r'\*SOURCE FILE:', edl_content):
-                error_msg = f"Error: EDL file does not contain any SOURCE FILE fields\n" \
+            # Use the first field layer that appears in the EDL
+            filenames = []
+            for edl_format, field_name, field_regex in self.SOURCE_FIELD_LAYERS:
+                filenames = field_regex.findall(edl_content)
+                if filenames:
+                    break
+
+            if not filenames:
+                field_names = ' or '.join(name for _, name, _ in self.SOURCE_FIELD_LAYERS)
+                error_msg = f"Error: EDL file does not contain any {field_names} fields\n" \
                           f"This EDL appears to be invalid or incomplete. Processing aborted."
                 self.logger.log(error_msg)
                 raise ValueError(error_msg)
-            
-            # Split the file into lines to get a more accurate count
-            lines = edl_content.splitlines()
-            
-            # Find all SOURCE FILE lines
-            source_file_lines = []
-            for line in lines:
-                if '*SOURCE FILE:' in line:
-                    source_file_lines.append(line)
-            
-            total_lines = len(source_file_lines)
-            self.logger.log(f"Total SOURCE FILE lines found: {total_lines}")
+
+            self.logger.log(f"Detected {edl_format} EDL format")
+            total_lines = len(filenames)
+            self.logger.log(f"Total {field_name} lines found: {total_lines}")
             
             # Create progress bar if more than 10 files
             progress = ProgressBar(total_lines, prefix='EDL Parsing Progress') if total_lines > 10 else None
             
-            # Process SOURCE FILE lines
+            # Process source field values
             unique_files = set()
-            for i, line in enumerate(source_file_lines):
-                # Extract filename - using the split approach for robustness
-                if '*SOURCE FILE:' in line:
-                    # Get everything after *SOURCE FILE:
-                    filename = line.split('*SOURCE FILE:', 1)[1].strip()
-                    if filename:  # Only add non-empty filenames
-                        unique_files.add(filename)
-                        self.logger.debug(f"Found source file: {filename}")
+            for i, filename in enumerate(filenames):
+                if filename.lower() in self.GENERATOR_CLIP_NAMES:
+                    self.logger.debug(f"Skipping generator clip: {filename}")
+                elif filename:  # Only add non-empty filenames
+                    unique_files.add(filename)
+                    self.logger.debug(f"Found source file: {filename}")
                 
                 # Update progress bar
                 if progress:

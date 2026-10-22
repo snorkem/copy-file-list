@@ -190,11 +190,16 @@ The GUI is organized into tabs for easy navigation:
 An Edit Decision List is a text file used in video editing that contains information about clips, timecodes, and source files.
 
 **Automatic Source Extraction:**
-The utility automatically parses EDL files and extracts source filenames from lines like:
-```
-* SOURCE FILE: clip_001.mov
-* FROM CLIP NAME: interview_take3.mp4
-```
+The utility detects which editor produced the EDL and extracts source filenames from the matching comment fields:
+
+| Editor | Source field | Example |
+|--------|--------------|---------|
+| Avid Media Composer | `SOURCE FILE` | `*SOURCE FILE: A001_C002_0101AB.MXF` |
+| Adobe Premiere Pro | `FROM CLIP NAME` / `TO CLIP NAME` | `* FROM CLIP NAME:  interview_take3.mp4` |
+
+If an EDL contains any `SOURCE FILE` lines, only those are used (Avid EDLs also carry `FROM CLIP NAME` comments, which hold clip names rather than filenames). Otherwise the `FROM CLIP NAME` lines are used, along with the `TO CLIP NAME` lines Premiere Pro writes for the incoming clip of a transition. Premiere Pro generator clips that have no media file (Black Video, Color Matte, Bars and Tone, Universal Counting Leader, Transparent Video, Adjustment Layer) are skipped.
+
+**Premiere Pro note:** `FROM CLIP NAME` is the clip's name in the Premiere project. If clips were renamed in the Project panel, the names in the EDL will not match the files on disk, so those clips will be reported as missing.
 
 **Benefits:**
 - No need to manually create file lists
@@ -711,7 +716,7 @@ python copy_file_list.py -s /src -d /dst -f files.txt -l log.txt -n | grep "Tota
 
 **Causes:**
 1. EDL format not recognized
-2. No "SOURCE FILE" lines in EDL
+2. No "SOURCE FILE" (Avid) or "FROM CLIP NAME" (Premiere Pro) lines in EDL
 3. Encoding issues
 
 **Solutions:**
@@ -720,7 +725,8 @@ python copy_file_list.py -s /src -d /dst -f files.txt -l log.txt -n | grep "Tota
    ```bash
    head -20 project.edl
    # Look for lines like:
-   # * SOURCE FILE: filename.mov
+   # *SOURCE FILE: filename.mov        (Avid Media Composer)
+   # * FROM CLIP NAME:  filename.mov   (Premiere Pro)
    ```
 
 2. **Try different encoding:**
@@ -731,7 +737,9 @@ python copy_file_list.py -s /src -d /dst -f files.txt -l log.txt -n | grep "Tota
 
 3. **Extract filenames manually:**
    ```bash
-   grep "SOURCE FILE" project.edl | sed 's/.*: //' > filenames.txt
+   grep "SOURCE FILE" project.edl | sed 's/.*: *//' > filenames.txt
+   # Premiere Pro EDLs:
+   grep "FROM CLIP NAME" project.edl | sed 's/.*: *//' | sort -u > filenames.txt
    python copy_file_list.py -s /src -d /dst -f filenames.txt -l log.txt
    ```
 

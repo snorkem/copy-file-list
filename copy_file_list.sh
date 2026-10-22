@@ -8,7 +8,7 @@
 # them to a destination directory. All operations are logged to a
 # detailed log file.
 # The script will:
-# - Parse EDL files to extract source filenames (when --edl flag is used)
+# - Parse Avid Media Composer or Premiere Pro EDL files to extract source filenames (when --edl flag is used)
 # - Search across multiple source directories
 # - Skip any files that already exist in the destination
 # - Append to the log file if it already exists
@@ -113,9 +113,27 @@ parse_edl_file() {
     
     echo "Parsing EDL file: $edl_file"
     
+    # Avid Media Composer EDLs list sources in "*SOURCE FILE:" comments. Premiere Pro
+    # EDLs use "* FROM CLIP NAME:" (plus "* TO CLIP NAME:" on transitions), so fall
+    # back to those only when no SOURCE FILE lines exist.
+    local field_regex='^[[:space:]]*\*[[:space:]]*SOURCE FILE:'
+    local field_name="SOURCE FILE"
+    if ! grep -qE "$field_regex" "$edl_file"; then
+        field_regex='^[[:space:]]*\*[[:space:]]*(FROM|TO) CLIP NAME:'
+        field_name="FROM/TO CLIP NAME"
+        if ! grep -qE "$field_regex" "$edl_file"; then
+            echo "Error: EDL file does not contain any SOURCE FILE or FROM/TO CLIP NAME fields"
+            echo "This EDL appears to be invalid or incomplete. Processing aborted."
+            exit 1
+        fi
+        echo "Detected Premiere Pro EDL format"
+    else
+        echo "Detected Avid Media Composer EDL format"
+    fi
+    
     # Count total lines in the EDL file
-    local total_lines=$(grep -c "*SOURCE FILE:" "$edl_file")
-    echo "Total SOURCE FILE lines: $total_lines"
+    local total_lines=$(grep -cE "$field_regex" "$edl_file")
+    echo "Total $field_name lines: $total_lines"
     
     # Create a temporary file to track progress
     local temp_output=$(mktemp)
@@ -123,20 +141,22 @@ parse_edl_file() {
     # Counter for progress
     local current_line=0
     
-    # Process SOURCE FILE lines with progress tracking
+    # Process source field lines with progress tracking
     while IFS= read -r line; do
         # Extract filename and add to output
-        echo "$line" | sed 's/\*SOURCE FILE: *//' >> "$temp_output"
+        echo "$line" | sed -E "s/${field_regex}[[:space:]]*//; s/[[:space:]]+\$//" >> "$temp_output"
         
         # Increment line counter
         ((current_line++))
         
         # Show progress
         show_edl_parse_progress "$current_line" "$total_lines"
-    done < <(grep "*SOURCE FILE:" "$edl_file")
+    done < <(grep -E "$field_regex" "$edl_file")
     
-    # Sort and remove duplicates
-    sort -u "$temp_output" > "$output_file"
+    # Sort and remove duplicates, dropping empty names and Premiere Pro generator
+    # clips (Black Video, Color Matte, etc.) that have no media file
+    grep -viE '^(black video|color matte|(hd )?bars and tone|universal counting leader|transparent video|adjustment layer)?$' \
+        "$temp_output" | sort -u > "$output_file"
     
     # Remove temporary file
     rm "$temp_output"
